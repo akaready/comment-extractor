@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import * as pdfjsLib from "pdfjs-dist";
-import { createCanvas } from "canvas";
-import { readFileSync } from "fs";
-import { join } from "path";
+
+// Try to import canvas, but make it optional for environments where it's not available
+let createCanvas: any;
+try {
+  const canvasModule = require("canvas");
+  createCanvas = canvasModule.createCanvas;
+} catch (error) {
+  console.warn("Canvas module not available - PDF processing will be disabled");
+  createCanvas = null;
+}
 
 // Configure PDF.js worker for Node.js
 pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve(
@@ -78,6 +85,10 @@ export async function POST(request: NextRequest) {
 
     // Helper function to convert PDF pages to images
     const convertPdfToImages = async (pdfBuffer: Buffer): Promise<Buffer[]> => {
+      if (!createCanvas) {
+        throw new Error("PDF processing is not available. Canvas module is not installed. This feature requires native dependencies that may not be available in all environments.");
+      }
+
       const loadingTask = pdfjsLib.getDocument({ data: pdfBuffer });
       const pdf = await loadingTask.promise;
       const images: Buffer[] = [];
