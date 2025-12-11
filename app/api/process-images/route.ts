@@ -27,33 +27,38 @@ interface ProcessedComment {
   rawResponse: string;
 }
 
-const SYSTEM_PROMPT = `You are an expert at extracting comments from social media screenshots (Instagram, Twitter, Facebook, etc.).
+const SYSTEM_PROMPT = `You are an expert at extracting comments from social media screenshots, PDFs, and images containing comment threads.
 
-Analyze the image and extract ALL comments visible in the screenshot. For each comment, extract:
-1. Username (if visible)
-2. Comment text (full text)
-3. Timestamp (if visible, e.g., "2h", "1d", "3w ago")
-4. Like count (if visible)
+CRITICAL: Your ONLY job is to extract comments from this image. Return ONLY valid JSON - no explanations, no markdown formatting, just pure JSON.
 
-Return the data in a structured JSON format like this:
+EXTRACTION RULES:
+1. Extract EVERY comment visible in the image - scan from top to bottom, left to right
+2. For each comment, extract:
+   - "text": The complete comment text (copy it exactly, don't summarize)
+   - "username": The username/handle if visible (omit if not visible)
+   - "timestamp": Time/date if visible (e.g., "2h", "1d", "3w ago", "Just now", "Dec 10, 2024")
+   - "likes": Like/reaction count if visible (e.g., "5", "12", "1.2K", "1.5K")
+3. Include ALL comments - even partial ones, replies, nested comments
+4. Don't skip any comments - be exhaustive
+5. If a field is not visible, simply omit it (don't include null)
+
+REQUIRED OUTPUT FORMAT (JSON only, no markdown):
 {
   "comments": [
     {
-      "username": "username1",
-      "text": "Full comment text here",
+      "username": "user1",
+      "text": "This is the full comment text exactly as it appears",
       "timestamp": "2h",
       "likes": "5"
     },
     {
-      "username": "username2",
-      "text": "Another comment",
-      "timestamp": "1d",
-      "likes": "12"
+      "text": "Another comment without username",
+      "timestamp": "1d"
     }
   ]
 }
 
-If a field is not visible or cannot be determined, use null or omit it. Be thorough and extract every comment you can see.`;
+Remember: Return ONLY the JSON object, nothing else. No markdown code blocks, no explanations.`;
 
 export async function POST(request: NextRequest) {
   try {
@@ -132,45 +137,103 @@ export async function POST(request: NextRequest) {
         ? `${fileName} (page ${pageNumber})`
         : fileName;
 
-      // Call Nano Banana Pro API
-      const response = await ai.models.generateContent({
-        model: "nano-banana-pro",
-        contents: [
-          {
-            inlineData: {
-              mimeType: mimeType,
-              data: base64Image,
-            },
-          },
-          { text: SYSTEM_PROMPT },
-        ],
-      });
-
-      const responseText = response.text || "";
+      // #region agent log
+      fetch('http://127.0.0.1:7244/ingest/a8443012-4755-4832-8c30-4121a6cadd1d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'route.ts:135',message:'Calling LLM API',data:{fileName:displayName,imageSize:base64Image.length,promptLength:SYSTEM_PROMPT.length},timestamp:Date.now(),sessionId:'debug-session',runId:'test-extraction',hypothesisId:'F'})}).catch(()=>{});
+      // #endregion
       
-      // Try to parse JSON from response
+      // Call Gemini API - use gemini-1.5-flash for reliable vision capabilities
+      const model = ai.getGenerativeModel({ 
+        model: "gemini-1.5-flash"
+      });
+      
+      const result = await model.generateContent([
+        {
+          inlineData: {
+            mimeType: mimeType,
+            data: base64Image,
+          },
+        },
+        { text: SYSTEM_PROMPT },
+      ]);
+
+      // Extract text from response - handle different response structures
+      let responseText = "";
+      try {
+        responseText = result.response.text();
+      } catch (error) {
+        // Fallback if response structure is different
+        try {
+          responseText = (result as any).text || "";
+        } catch (e) {
+          responseText = "";
+        }
+      }
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7244/ingest/a8443012-4755-4832-8c30-4121a6cadd1d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'route.ts:149',message:'LLM raw response received',data:{fileName:displayName,responseLength:responseText.length,responsePreview:responseText.substring(0,500)},timestamp:Date.now(),sessionId:'debug-session',runId:'test-extraction',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      
+      // Try to parse JSON from response - handle multiple formats
       let parsedComments: any = { comments: [] };
       try {
-        // Extract JSON from response (might be wrapped in markdown code blocks)
-        const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/) || 
-                        responseText.match(/```\s*([\s\S]*?)\s*```/) ||
-                        responseText.match(/\{[\s\S]*\}/);
+        // Strategy 1: Extract JSON from markdown code blocks
+        let jsonString = responseText.trim();
         
-        if (jsonMatch) {
-          parsedComments = JSON.parse(jsonMatch[1] || jsonMatch[0]);
-        } else {
-          // Fallback: try to parse the entire response as JSON
-          parsedComments = JSON.parse(responseText);
+        // Remove markdown code blocks if present
+        const jsonBlockMatch = jsonString.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        if (jsonBlockMatch) {
+          jsonString = jsonBlockMatch[1].trim();
         }
-      } catch (parseError) {
-        // If JSON parsing fails, create a single comment with the raw text
-        parsedComments = {
-          comments: [
-            {
-              text: responseText,
-            },
-          ],
-        };
+        
+        // Strategy 2: Find JSON object in the text (look for first { to last })
+        const firstBrace = jsonString.indexOf('{');
+        const lastBrace = jsonString.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          jsonString = jsonString.substring(firstBrace, lastBrace + 1);
+        }
+        
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/a8443012-4755-4832-8c30-4121a6cadd1d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'route.ts:185',message:'JSON extraction attempt',data:{jsonStringLength:jsonString.length,jsonPreview:jsonString.substring(0,200)},timestamp:Date.now(),sessionId:'debug-session',runId:'test-extraction',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
+        
+        // Parse the cleaned JSON string
+        parsedComments = JSON.parse(jsonString);
+        
+        // Validate structure
+        if (!parsedComments.comments || !Array.isArray(parsedComments.comments)) {
+          throw new Error("Invalid JSON structure: missing comments array");
+        }
+        
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/a8443012-4755-4832-8c30-4121a6cadd1d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'route.ts:195',message:'JSON parsed successfully',data:{commentCount:parsedComments.comments.length,firstComment:parsedComments.comments[0]||null},timestamp:Date.now(),sessionId:'debug-session',runId:'test-extraction',hypothesisId:'C'})}).catch(()=>{});
+        // #endregion
+      } catch (parseError: any) {
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/a8443012-4755-4832-8c30-4121a6cadd1d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'route.ts:199',message:'JSON parse failed',data:{error:parseError.message,responsePreview:responseText.substring(0,500)},timestamp:Date.now(),sessionId:'debug-session',runId:'test-extraction',hypothesisId:'E'})}).catch(()=>{});
+        // #endregion
+        
+        // If JSON parsing fails, try to extract comments from raw text
+        // Look for patterns that might indicate comments
+        const commentPatterns = responseText.match(/(?:comment|text|username)[:\s]+["']?([^"'\n]+)["']?/gi);
+        if (commentPatterns && commentPatterns.length > 0) {
+          parsedComments = {
+            comments: commentPatterns.map((pattern: string) => {
+              const match = pattern.match(/["']?([^"'\n]+)["']?/);
+              return {
+                text: match ? match[1] : pattern,
+              };
+            }),
+          };
+        } else {
+          // Last resort: create a single comment with the raw text
+          parsedComments = {
+            comments: [
+              {
+                text: responseText.substring(0, 500), // Limit length
+              },
+            ],
+          };
+        }
       }
 
       return {
