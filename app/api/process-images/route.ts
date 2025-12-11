@@ -3,20 +3,14 @@ import { GoogleGenAI } from "@google/genai";
 import * as pdfjsLib from "pdfjs-dist";
 
 // Configure PDF.js worker for Node.js
-// In Node.js environments, we can disable the worker or use a file path
+// Set the worker source path for server-side rendering
 try {
-  // Try to set worker to disabled for Node.js (no worker needed server-side)
-  pdfjsLib.GlobalWorkerOptions.workerSrc = false;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve(
+    "pdfjs-dist/build/pdf.worker.min.mjs"
+  );
 } catch (error) {
-  // If that doesn't work, try setting a path
-  try {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve(
-      "pdfjs-dist/build/pdf.worker.min.mjs"
-    );
-  } catch (fallbackError) {
-    // Last resort: disable worker
-    (pdfjsLib.GlobalWorkerOptions as any).workerSrc = false;
-  }
+  // Fallback: use relative path if require.resolve fails
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "pdfjs-dist/build/pdf.worker.min.mjs";
 }
 
 export const runtime = "nodejs";
