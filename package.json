@@ -21,7 +21,9 @@
     "@radix-ui/react-label": "^2.1.0",
     "react-dropzone": "^14.2.3",
     "@radix-ui/react-slot": "^1.1.0",
-    "@radix-ui/react-toast": "^1.2.1"
+    "@radix-ui/react-toast": "^1.2.1",
+    "pdfjs-dist": "^4.0.379",
+    "canvas": "^2.11.2"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

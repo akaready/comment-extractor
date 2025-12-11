@@ -1,5 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
+import * as pdfjsLib from "pdfjs-dist";
+import { createCanvas } from "canvas";
+import { readFileSync } from "fs";
+import { join } from "path";
+
+// Configure PDF.js worker for Node.js
+pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve(
+  "pdfjs-dist/build/pdf.worker.min.mjs"
+);
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // 5 minutes for processing multiple images
@@ -67,68 +76,132 @@ export async function POST(request: NextRequest) {
 
     const results: ProcessedComment[] = [];
 
-    // Process each image
+    // Helper function to convert PDF pages to images
+    const convertPdfToImages = async (pdfBuffer: Buffer): Promise<Buffer[]> => {
+      const loadingTask = pdfjsLib.getDocument({ data: pdfBuffer });
+      const pdf = await loadingTask.promise;
+      const images: Buffer[] = [];
+
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 2.0 });
+
+        const canvas = createCanvas(viewport.width, viewport.height);
+        const context = canvas.getContext("2d");
+
+        await page.render({
+          canvasContext: context as any,
+          viewport: viewport,
+        }).promise;
+
+        images.push(canvas.toBuffer("image/png"));
+      }
+
+      return images;
+    };
+
+    // Helper function to process a single image
+    const processImage = async (
+      imageBuffer: Buffer,
+      mimeType: string,
+      fileName: string,
+      pageNumber?: number
+    ): Promise<ProcessedComment> => {
+      const base64Image = imageBuffer.toString("base64");
+      const displayName = pageNumber 
+        ? `${fileName} (page ${pageNumber})`
+        : fileName;
+
+      // Call Nano Banana Pro API
+      const response = await ai.models.generateContent({
+        model: "nano-banana-pro",
+        contents: [
+          {
+            inlineData: {
+              mimeType: mimeType,
+              data: base64Image,
+            },
+          },
+          { text: SYSTEM_PROMPT },
+        ],
+      });
+
+      const responseText = response.text || "";
+      
+      // Try to parse JSON from response
+      let parsedComments: any = { comments: [] };
+      try {
+        // Extract JSON from response (might be wrapped in markdown code blocks)
+        const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/) || 
+                        responseText.match(/```\s*([\s\S]*?)\s*```/) ||
+                        responseText.match(/\{[\s\S]*\}/);
+        
+        if (jsonMatch) {
+          parsedComments = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+        } else {
+          // Fallback: try to parse the entire response as JSON
+          parsedComments = JSON.parse(responseText);
+        }
+      } catch (parseError) {
+        // If JSON parsing fails, create a single comment with the raw text
+        parsedComments = {
+          comments: [
+            {
+              text: responseText,
+            },
+          ],
+        };
+      }
+
+      return {
+        imageName: displayName,
+        comments: parsedComments.comments || [],
+        rawResponse: responseText,
+      };
+    };
+
+    // Process each file
     for (const file of files) {
       try {
-        // Convert file to base64
         const arrayBuffer = await file.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
-        const base64Image = buffer.toString("base64");
 
-        // Determine MIME type
-        const mimeType = file.type || "image/jpeg";
-
-        // Call Nano Banana Pro API
-        const response = await ai.models.generateContent({
-          model: "nano-banana-pro",
-          contents: [
-            {
-              inlineData: {
-                mimeType: mimeType,
-                data: base64Image,
-              },
-            },
-            { text: SYSTEM_PROMPT },
-          ],
-        });
-
-        const responseText = response.text || "";
-        
-        // Try to parse JSON from response
-        let parsedComments: any = { comments: [] };
-        try {
-          // Extract JSON from response (might be wrapped in markdown code blocks)
-          const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/) || 
-                          responseText.match(/```\s*([\s\S]*?)\s*```/) ||
-                          responseText.match(/\{[\s\S]*\}/);
-          
-          if (jsonMatch) {
-            parsedComments = JSON.parse(jsonMatch[1] || jsonMatch[0]);
-          } else {
-            // Fallback: try to parse the entire response as JSON
-            parsedComments = JSON.parse(responseText);
+        if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+          // Handle PDF files - convert each page to an image
+          try {
+            const pdfImages = await convertPdfToImages(buffer);
+            
+            // Process each page as a separate image
+            for (let i = 0; i < pdfImages.length; i++) {
+              const result = await processImage(
+                pdfImages[i],
+                "image/png",
+                file.name,
+                i + 1
+              );
+              results.push(result);
+            }
+          } catch (pdfError: any) {
+            results.push({
+              imageName: file.name,
+              comments: [],
+              rawResponse: `Error processing PDF: ${pdfError.message}`,
+            });
           }
-        } catch (parseError) {
-          // If JSON parsing fails, create a single comment with the raw text
-          parsedComments = {
-            comments: [
-              {
-                text: responseText,
-              },
-            ],
-          };
+        } else {
+          // Handle regular image files
+          const result = await processImage(
+            buffer,
+            file.type || "image/jpeg",
+            file.name
+          );
+          results.push(result);
         }
-
-        results.push({
-          imageName: file.name,
-          comments: parsedComments.comments || [],
-          rawResponse: responseText,
-        });
       } catch (error: any) {
         results.push({
           imageName: file.name,
           comments: [],
-          rawResponse: `Error processing image: ${error.message}`,
+          rawResponse: `Error processing file: ${error.message}`,
         });
       }
     }

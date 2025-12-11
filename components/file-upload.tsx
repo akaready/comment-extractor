@@ -34,6 +34,7 @@ export function FileUpload({
     onDrop,
     accept: {
       "image/*": [".png", ".jpg", ".jpeg", ".gif", ".webp"],
+      "application/pdf": [".pdf"],
     },
     multiple: true,
     noClick: false,
@@ -78,7 +79,7 @@ export function FileUpload({
               or click to select files
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              Supports PNG, JPG, JPEG, GIF, WEBP
+              Supports PNG, JPG, JPEG, GIF, WEBP, PDF
             </p>
           </div>
         </div>
@@ -92,12 +93,19 @@ export function FileUpload({
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
             {acceptedFiles.map((file, index) => (
               <Card key={index} className="relative group overflow-hidden">
-                <div className="aspect-square relative">
-                  <img
-                    src={URL.createObjectURL(file)}
-                    alt={file.name}
-                    className="w-full h-full object-cover"
-                  />
+                <div className="aspect-square relative bg-muted flex items-center justify-center">
+                  {file.type === "application/pdf" ? (
+                    <div className="text-center p-4">
+                      <div className="text-4xl mb-2">📄</div>
+                      <p className="text-xs font-medium">PDF</p>
+                    </div>
+                  ) : (
+                    <img
+                      src={URL.createObjectURL(file)}
+                      alt={file.name}
+                      className="w-full h-full object-cover"
+                    />
+                  )}
                   <Button
                     variant="destructive"
                     size="icon"
