@@ -2,20 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import * as pdfjsLib from "pdfjs-dist";
 
-// Try to import canvas, but make it optional for environments where it's not available
-let createCanvas: any;
-try {
-  const canvasModule = require("canvas");
-  createCanvas = canvasModule.createCanvas;
-} catch (error) {
-  console.warn("Canvas module not available - PDF processing will be disabled");
-  createCanvas = null;
-}
-
 // Configure PDF.js worker for Node.js
-pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve(
-  "pdfjs-dist/build/pdf.worker.min.mjs"
-);
+// In Node.js environments, we can disable the worker or use a file path
+try {
+  // Try to set worker to disabled for Node.js (no worker needed server-side)
+  pdfjsLib.GlobalWorkerOptions.workerSrc = false;
+} catch (error) {
+  // If that doesn't work, try setting a path
+  try {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve(
+      "pdfjs-dist/build/pdf.worker.min.mjs"
+    );
+  } catch (fallbackError) {
+    // Last resort: disable worker
+    (pdfjsLib.GlobalWorkerOptions as any).workerSrc = false;
+  }
+}
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // 5 minutes for processing multiple images
@@ -83,8 +85,21 @@ export async function POST(request: NextRequest) {
 
     const results: ProcessedComment[] = [];
 
+    // Helper function to get canvas (lazy load to avoid build-time resolution)
+    const getCreateCanvas = (): any => {
+      try {
+        // Use Function constructor to avoid webpack static analysis
+        const requireFunc = new Function('moduleName', 'return require(moduleName)');
+        const canvasModule = requireFunc('canvas');
+        return canvasModule.createCanvas;
+      } catch (error) {
+        return null;
+      }
+    };
+
     // Helper function to convert PDF pages to images
     const convertPdfToImages = async (pdfBuffer: Buffer): Promise<Buffer[]> => {
+      const createCanvas = getCreateCanvas();
       if (!createCanvas) {
         throw new Error("PDF processing is not available. Canvas module is not installed. This feature requires native dependencies that may not be available in all environments.");
       }
